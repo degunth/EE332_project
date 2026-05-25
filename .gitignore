@@ -1,0 +1,32 @@
+# ==========================================
+# Vivado & Xilinx Git Ignore Rules
+# ==========================================
+
+# Vivado temporary files and directories
+.Xil/
+**/.Xil/
+*.log
+*.jou
+*.str
+*.pb
+*.html
+*.xml
+*.prm
+*.dir/
+
+# Vivado project subdirectories containing compilation trash and database cache
+*.cache/
+**/Control_and_Payment.cache/
+*.hw/
+**/Control_and_Payment.hw/
+*.ip_user_files/
+**/Control_and_Payment.ip_user_files/
+*.runs/
+**/Control_and_Payment.runs/
+*.sim/
+**/Control_and_Payment.sim/
+
+# OS-specific temporary files
+Thumbs.db
+Desktop.ini
+.DS_Store
