@@ -1,144 +1,145 @@
-# 自动售货机核心控制与支付系统 (VHDL Core Control & Payment System)
+# 💎 自动售货机系统集成设计 (VHDL Vending Machine Integrated System)
 
-本目录为自动售货机项目中的 **核心控制与支付系统 (角色 C 负责部分)** 代码库。为了方便小组内其他三位同学进行接口对接、模块调用以及系统级大集成，特编写此技术对接与使用说明书。
+本工程为南方科技大学 (SUSTech) **EE332 数字系统设计 (Digital System Design)** 课程的课程项目 —— **自动售货机核心控制、支付与 VGA 渲染集成系统** 的完整硬件工程代码库。
 
----
-
-## 🏗️ 一、 模块架构设计 (System Architecture)
-
-核心系统由两个完全解耦的 VHDL 子模块构成。它们通过硬件级握手信号级联，构成了一个经典的 **控制单元 (CU) + 数据通路 (DP)** 硬件架构：
-
-1.  **`payment_controller.vhd` (余额计算与加减累加器 - DP)**：
-    *   管理与更新账户余额，上电/复位初始值为 **50元**。
-    *   接收消抖后的投币脉冲，执行十进制无符号累加（支持连续按键叠加），具备 **250元上限防溢出安全拦截**。
-    *   接收 FSM 触发的 `deduct_pulse`，执行扣费操作（$余额 = 余额 - 单价$）。
-    *   接收 `cancel_sw` (`SW[15]`) 信号，实现一键退币，余额重置为 50 元。
-2.  **`vending_fsm.vhd` (主控有限状态机 - CU)**：
-    *   负责自动售货机 5 大系统状态的有序跳转（Idle/Select -> Compare -> Success / Error -> Idle）。
-    *   执行余额、商品单价与库存的比对与交易仲裁。
-    *   校验成功时，在状态跳转的上升沿瞬间送出 **单周期高电平脉冲**（`deduct_pulse` 和 `dispense_pulse`），在物理时序上彻底杜绝多次扣款与出货 Bug。
-    *   校验失败时，跳转至对应错误状态并对外广播状态编码。在 Success / Error 状态下利用时钟计数器**平滑停留 3 秒**后自动返回初始选择状态。
+系统采用 VHDL 语言实现，基于经典的 **控制单元 (CU) + 数据通路 (DP)** 的总线硬件架构进行高度解耦模块化设计。项目已在 **Xilinx Nexys 4 DDR / Basys 3** 开发板上进行了板级部署与整机联合调试，功能完全实现，运行稳定。
 
 ---
 
-## 🔌 二、 外部接口引脚规范 (Interface Specification)
+## 🏗️ 一、 硬件系统拓扑与模块架构 (System Architecture)
 
-为了保证成员 A进行顶层大集成 (`vending_machine_top.vhd`) 时“连线即成功”，模块所有对外端口均采用最基础的 **`std_logic`** 和 **`std_logic_vector`** 标准类型，不暴露任何自定义或 `unsigned` 类型。
+整个系统由主控顶层模块桥接，集成了外设按键消抖、时钟复位、数据计算、状态跳转以及 VGA 实时像素风渲染等 8 大核心子模块，数据与控制总线拓扑关系如下：
 
-### 1. 余额计算模块 `payment_controller` 接口
-```vhdl
-entity payment_controller is
-    Port (
-        clk             : in  std_logic;                     -- 系统主时钟
-        rst             : in  std_logic;                     -- 全局同步复位（高电平有效）
-        cancel_sw       : in  std_logic;                     -- 退币与取消交易拨码开关 (SW[15])
-        coin_1          : in  std_logic;                     -- 充值+1元脉冲（来自成员D的BTNL消抖输出）
-        coin_5          : in  std_logic;                     -- 充值+5元脉冲（来自成员D的BTND消抖输出）
-        coin_10         : in  std_logic;                     -- 充值+10元脉冲（来自成员D的BTNU消抖输出）
-        coin_20         : in  std_logic;                     -- 充值+20元脉冲（来自成员D的BTNR消抖输出）
-        product_price   : in  std_logic_vector(7 downto 0);  -- 当前选中商品单价（来自成员B的stock_controller）
-        deduct_pulse    : in  std_logic;                     -- 扣款触发单脉冲（来自核心状态机FSM）
-        user_balance    : out std_logic_vector(7 downto 0)   -- 当前账户余额输出（送至FSM及成员D的数码管）
-    );
-end payment_controller;
+```mermaid
+graph TD
+    %% 硬件输入端
+    CLK["CLK100MHZ (板载时钟)"] --> TOP["vending_machine_top.vhd<br/>(顶层集成与复位中枢)"]
+    RESETN["CPU_RESETN (复位键)"] --> TOP
+    SW_SEL["SW[3:0] (商品选择)"] --> TOP
+    SW_MODE["SW[14] (补货模式)"] --> TOP
+    SW_CANCEL["SW[15] (退币/重置)"] --> TOP
+    BTNS["物理按键 BTNC/U/D/L/R"] --> TOP
+
+    subgraph TOP_LEVEL ["vending_machine_top 顶层内部"]
+        %% 核心子模块
+        DEB["button_debounce<br/>(按键同步消抖)"]
+        STOCK["product_stock_controller<br/>(库存与单价 ROM)"]
+        PAY["payment_controller<br/>(余额累加与扣减)"]
+        FSM["vending_fsm<br/>(总控状态机)"]
+        SSD["sevenseg_driver<br/>(八位数码管扫描)"]
+        LEDD["led_status_driver<br/>(LED 警示与特效)"]
+        VGA["vga_controller<br/>(VGA 像素风渲染器)"]
+        
+        FILTER["信号安全分流逻辑"]
+    end
+
+    %% 输入总线桥接
+    BTNS --> DEB
+    SW_MODE --> FILTER
+    DEB --> |"原始 coin_10 (BTNU)"| STOCK
+    DEB --> |"消抖脉冲"| FILTER
+    
+    %% 过滤后脉冲
+    FILTER --> |"coin_X_filtered"| PAY
+    FILTER --> |"confirm_press_filtered"| FSM
+
+    %% 核心交互线
+    STOCK --> |"product_price / product_stock"| FSM
+    STOCK --> |"product_price / product_stock"| VGA
+    
+    PAY --> |"user_balance"| FSM
+    PAY --> |"user_balance"| SSD
+    PAY --> |"user_balance"| VGA
+    
+    FSM --> |"deduct_pulse"| PAY
+    FSM --> |"dispense_pulse"| STOCK
+    FSM --> |"fsm_state (系统状态)"| VGA
+    FSM --> |"fsm_state (系统状态)"| LEDD
+    FSM --> |"fsm_state (系统状态)"| SSD
+
+    %% 外部输出硬件
+    VGA --> |"VGA 行场同步与 RGB 信号"| DISP["TFT 液晶显示器 (640x480)"]
+    SSD --> |"SEG / AN 信号"| SEGS["板载八位数码管"]
+    LEDD --> |"LED 灯阵"| LEDS["板载 16 位 LED"]
 ```
 
-### 2. 主控状态机模块 `vending_fsm` 接口
-```vhdl
-entity vending_fsm is
-    Generic (
-        CLK_FREQ_HZ : integer := 1000                        -- 驱动状态机的时钟频率（默认1kHz）
-    );
-    Port (
-        clk             : in  std_logic;                     -- 系统时钟
-        rst             : in  std_logic;                     -- 全局同步复位（高电平有效）
-        cancel_sw       : in  std_logic;                     -- 取消交易拨码开关 (SW[15])
-        confirm_press   : in  std_logic;                     -- 交易确认按键单脉冲（来自成员D的BTNC消抖输出）
-        user_balance    : in  std_logic_vector(7 downto 0);  -- 当前账户余额（来自payment_controller）
-        product_price   : in  std_logic_vector(7 downto 0);  -- 商品价格（来自成员B的stock_controller）
-        product_stock   : in  std_logic_vector(7 downto 0);  -- 商品当前库存（来自成员B的stock_controller）
-        deduct_pulse    : out std_logic;                     -- 输出给余额控制器的单周期扣款脉冲
-        dispense_pulse  : out std_logic;                     -- 输出给库存控制器的单周期库存减1脉冲
-        fsm_state       : out std_logic_vector(2 downto 0)   -- 广播给VGA渲染与外设的状态编码
-    );
-end vending_fsm;
+---
+
+## 🔌 二、 核心子模块设计规范 (Core Submodules)
+
+### 1. 顶层集成与复位中枢 (`vending_machine_top.vhd`)
+*   **上电自动复位 (POR)**：内置 20 ms 时钟延时计数器，解决 FPGA 烧录瞬间因时钟未稳定导致的状态死锁与库存未初始化 Bug。
+*   **信号防冲突安全分流器**：
+    当管理员上拉 `SW[14]` 进入补货模式时，过滤掉投币（`coin_X`）与交易确认（`confirm`）脉冲，自动**“冻结”**余额和 FSM。在此模式下，上方向键 `BTNU` 专属于触发补货逻辑，解决了物理按键复用的冲突。
+
+### 2. 商品与库存控制器 (`product_stock_controller.vhd`)
+*   **商品只读存储器 (ROM)**：支持 16 种不同的商品，以 8 位二进制输出各个商品的单价（从 2 元到 50 元）。
+*   **动态库存寄存器组**：初始库存默认为 5 件。接收来自 FSM 的 `dispense_pulse` 单周期脉冲时对当前商品库存进行 **`-1`**。
+*   **管理员补货逻辑**：当 `replenish_mode = '1'` (SW[14]拉起) 且捕获到补货脉冲 `replenish_trigger = '1'` (按压 `BTNU`) 时，当前选中商品的库存寄存器 **`+1`**，上限死锁为 **`10`**。
+
+### 3. 余额控制器 (`payment_controller.vhd`)
+*   **无溢出安全加法器**：接收消抖后的投币脉冲，实现账户余额累加（支持连续多次按键累加，上限 250 元）。
+*   **安全加法判定**：放弃了原先 8 位无符号累加（会发生二进制溢出回绕至 0 元的 Bug），在底层采用 32 位 `integer` 宽度的保护性加法判断：
+    ```vhdl
+    if to_integer(balance) + 20 <= MAX_LIMIT then
+        balance <= balance + 20;
+    end if;
+    ```
+    使得余额在累加到 240~250 时会被死死拦截并锁定，彻底根成了余额“翻转回绕”的隐患。
+*   **扣费与退币**：接收 `deduct_pulse` 自动减去商品单价；接收 `cancel_sw` (`SW[15]`) 瞬时归还全部余额至初始 50 元。
+
+### 4. 总控有限状态机 (`vending_fsm.vhd`)
+*   采用三段式主控状态机，高可靠性管理售货机五大状态：
+    1.  `ST_IDLE` (空闲选购)：监控 `SW[3:0]` 选择商品。
+    2.  `ST_COMPARE` (账单校验)：在按压 `BTNC` 时对余额、单价及库存进行一轮校验仲裁。
+    3.  `ST_SUCCESS` (交易成功)：瞬时发出单时钟周期 `deduct_pulse` 和 `dispense_pulse`，并平稳停留 3 秒出货。
+    4.  `ST_ERR_LOW_BAL` (余额不足报警)：LED 高频闪烁，停留 3 秒自跳转。
+    5.  `ST_ERR_OUT_OF_STOCK` (缺货报警)：数码管报错，停留 3 秒自跳转。
+
+### 5. VGA 像素风高级渲染器 (`vga_controller.vhd`)
+本模块是系统视觉效果的核心，提供高保真 640x480 @ 60Hz 像素风图形画面：
+*   **16 宫格商品矩阵 (4x4)**：采用 65 像素高卡片，在深灰色背景上平铺渲染 16 个极具美感的像素风图标（包含可乐、咖啡、牛奶、面包等 16 种不同色系的像素原画）。
+*   **选中高亮框红化**：使用醒目的**纯红色高亮边框**追踪当前选中商品，对比度极佳，反光环境下依然清晰。
+*   **字模渲染系统 (Pixel Font)**：自研 5x7 点阵字库，以放大倍率 3 倍实时渲染底部状态信息：`BAL: XXX` (余额)、`PRC: XX` (售价)、`STK: XX` (库存)。
+*   **动态彩色警告弹窗**：当 FSM 跳转至异常或成功状态时，屏幕正中央自动浮现出一个带有 **3 像素白色描边** 的彩色遮罩弹窗（成功为绿色，余额不足为红色，缺货为黄色），并在弹窗内高对比度居中显示点阵提示词：`"SUCCESS"`、`"LOW BAL"`、`"NO STOCK"`。
+
+---
+
+## 🎮 三、 物理操作指南 (User Operation Guide)
+
+将编译生成的 `.bit` 字节流文件下载至 FPGA 开发板后，即可根据以下指南演示全部功能：
+
+| 演示阶段 | 物理操作步骤 | 预期外设与屏幕显示 |
+| :--- | :--- | :--- |
+| **1. 初始上电** | 烧录完成或按下 `CPU_RESETN` 键 | 屏幕初始化显示 16 宫格商品；底部显示 `BAL: 050`，数码管显示 `50`；选中商品红框停留在商品 1 上。 |
+| **2. 选择商品** | 拨动右侧的商品选择开关 **`SW[3:0]`** (二进制 0~7 / 0~15) | 红框随之移动到对应卡片上；屏幕右下角的 `PRC` (售价) 和 `STK` (库存) 实时更新为当前选中的商品信息。 |
+| **3. 充值累加** | 按下十字方向键：**BTNL (+1元)**, **BTND (+5元)**, **BTNU (+10元)**, **BTNR (+20元)** | 屏幕的 `BAL` 和数码管实时阶梯递增；若充值超过 240 元，再次充值会被安全锁定在 250 元，不会溢出回零。 |
+| **4. 一键退币** | 拨动最左侧开关 **`SW[15]`** 至上方 `'1'` 状态 | 无论当前余额为多少，系统退币，余额重置为初始 `50` 元。 |
+| **5. 购买成功** | 充值大于售价，选中商品（库存 > 0），按下中间确认键 **`BTNC`** | 屏幕中心弹出绿色描边框，显示字模 **`"SUCCESS"`** 并停留 3 秒出货；16位LED跑马灯特效闪烁；余额和库存自动扣减。 |
+| **6. 余额不足** | 余额小于选中售价，按下中间确认键 **`BTNC`** | 屏幕中心弹出红色框并高亮显示 **`"LOW BAL"`** 警报并停留 3 秒；数码管闪烁，16位LED灯以 2Hz 同步高频闪烁报警。 |
+| **7. 商品售罄** | 购买直至当前商品库存变为 `00`，再次按下 **`BTNC`** 购买 | 屏幕中心弹出黄色框显示 **`"NO STOCK"`**；数码管显示 **`"Err"`** 报警并停留 3 秒。 |
+| **8. 管理员补货** | 1. 拨起补货开关 **`SW[14]`** 至上方<br/>2. 拨动 **`SW[3:0]`** 选中想加货的商品<br/>3. 连续按压上方向键 **`BTNU`** | 1. 交易系统自动安全“冻结”。<br/>2. 屏幕底部的商品库存 `STK: XX` 伴随按键步进递增（上限 10）。<br/>3. 拨回 `SW[14]` 结束补货，恢复普通销售。 |
+
+---
+
+## 📂 四、 目录结构与源文件说明
+
+```text
+├── README.md                           # 本项目技术对接与操作说明书
+├── vending_machine_sources             # 自动售货机最终项目核心源文件目录
+│   ├── vending_machine_top.vhd         # 【Top级集成】顶层设计与信号防冲突分流
+│   ├── vga_controller.vhd              # 【VGA核心】4x4平铺、点阵字模与动态彩色警报窗
+│   ├── product_stock_controller.vhd    # 【库存与单价】16种商品数据与管理员补货逻辑
+│   ├── payment_controller.vhd          # 【余额通路】防翻转高安全投币计算与退币
+│   ├── vending_fsm.vhd                 # 【有限状态机】控制单元，3秒平滑自跳转
+│   ├── button_debounce.vhd             # 【同步消抖】多路按键消抖，输出单时钟脉冲
+│   ├── sevenseg_driver.vhd             # 【数码管驱动】动态扫描，支持低额闪烁与Err提示
+│   ├── led_status_driver.vhd           # 【LED驱动】支持呼吸跑马灯与2Hz同步高频闪烁
+│   └── vending_machine_final.xdc       # 【物理约束】FPGA 板级所有引脚映射与电平约束
+└── Vending_Machine
+    └── project_fianl                   # Vivado 2020.2/2023.1 工程目录（双击此内 .xpr 打开工程）
 ```
 
 ---
 
-## 🤝 三、 联调对接协议 (Integration Protocols)
-
-### 1. 给 成员 A (VGA 渲染) & 成员 D (数码管与 LED 指示) 的状态广播协议：
-主状态机输出的 `fsm_state(2 downto 0)` 用于实时广播售货机的状态。请按照以下编码进行对应的外设渲染与指示灯设计：
-
-| `fsm_state` 编码 | 对应状态描述 | 成员 A (VGA 画面) 渲染要求 | 成员 D (外设指示) 响应要求 |
-| :--- | :--- | :--- | :--- |
-| **`"000"`** | `ST_IDLE` (空闲选择) | 渲染主选择界面，动态移动光标 | 数码管正常动态扫描显示当前余额 |
-| **`"001"`** | `ST_COMPARE` (账单校验) | 保持上一帧，等待转换 | 数码管正常显示 |
-| **`"010"`** | `ST_SUCCESS` (交易成功) | 屏幕中央弹出**绿/蓝色**的 “交易成功，正在出货” 弹出框 | 16位LED灯闪烁流水灯特效；数码管递减为最新余额 |
-| **`"011"`** | `ST_ERR_LOW_BAL` (余额不足) | 屏幕中央弹出**红色**的 “余额不足，请充值！” 警告框 | 16位LED灯以 **2Hz 频率进行全体高频同步闪烁** 报警；数码管闪烁 |
-| **`"100"`** | `ST_ERR_OUT_OF_STOCK` (商品缺货) | 屏幕中央弹出**黄色**的 “商品已售罄 (Out of Stock)” 警示框 | LED 产生警报闪烁指示；数码管显示 `"Err"` 或闪烁 |
-
-### 2. 给 成员 B (库存控制器) 的握手协议：
-*   当交易成功时，`vending_fsm` 会向成员 B 产生一个高电平持续仅 1 个时钟周期的 **`dispense_pulse`** 单脉冲。
-*   成员 B 的库存控制器在捕获到此脉冲时，需对当前选中商品 ID 的库存寄存器进行无条件 **减 1** 运算。
-
----
-
-## 🧪 四、 仿真验证波形与深度剖析 (Simulation Waveforms)
-
-我们已在 Vivado Simulator 中对所有模块进行了高覆盖率的时序仿真，仿真波形完全正确，逻辑响应表现极其优异。
-
-### 1. 余额控制计算模块仿真 (tb_payment_controller)
-
-![余额控制器仿真波形图](assets/payment_controller.png)
-
-#### 📈 波形详细解析（供报告使用）：
-1.  **上电复位期 (0 - 20ns)**：`rst` 产生高电平脉冲，`user_balance` 立即准确加载初始值 **`32`**（十六进制 `32` = 十进制 **50元**）。
-2.  **累加阶梯期 (40ns - 120ns)**：
-    *   `coin_1` 脉冲到来：余额升为 `33`（十进制 **51元**）。
-    *   `coin_5` 脉冲到来：余额升为 `38`（十进制 **56元**）。
-    *   `coin_10` 脉冲到来：余额升为 `42`（十进制 **66元**）。
-    *   `coin_20` 脉冲到来：余额升为 `56`（十进制 **86元**）。
-    *   验证结论：**充值按键单脉冲累加逻辑响应极快，数据计算完全正确**。
-3.  **交易自动结算扣费 (140ns - 150ns)**：
-    *   商品单价 `product_price` 输入为十六进制 **`1a`**（十进制 **26元**）。
-    *   FSM 下达单个时钟周期的 **`deduct_pulse`** 扣款脉冲。
-    *   在下一个时钟上升沿，余额瞬间下调为 **`3c`**（十六进制 `3c` = 十进制 **60元**），计算公式为 $86 - 26 = 60$，**扣款动作瞬间完成**。
-4.  **充值上限安全拦截 (180ns - 380ns)**：
-    *   连续循环输入 10 次 `coin_20` 充值脉冲。
-    *   余额呈现阶梯累加，在升至 **`fa` (十进制 250元)** 之后，尽管外部充值脉冲仍在不断注入，但**余额波形完全拉平，死死地被钳制在 250 元**！
-    *   验证结论：**成功防止了因多次加额导致寄存器在 255 处发生二进制溢出与翻转回绕，保护了硬件计算安全**。
-5.  **一键取消与退币复位 (410ns)**：
-    *   拉高取消开关 `cancel_sw` (SW[15])，余额无论之前是 250 元还是其他数值，瞬间归零重置恢复到初始值 **`32`** (50元)。
-
----
-
-### 2. 有限状态机总控模块仿真 (tb_vending_fsm)
-
-![状态机主控仿真波形图](assets/vending_fsm.png)
-
-#### 📈 波形详细解析（供报告使用）：
-1.  **复位进入空闲 (0 - 20ns)**：复位信号拉高，系统初始状态 `fsm_state` 为 **`0`**（`ST_IDLE` 空闲选择状态）。
-2.  **交易请求发起 (40ns - 50ns)**：
-    *   交易参数设为：余额 60 元 (`3c`)，商品单价 20 元 (`14`)，当前商品库存 5 件 (`05`)。
-    *   捕获到确认交易脉冲 `confirm_press`，在 50ns 处状态机状态无延迟跳转为 **`1`**（`ST_COMPARE` 比对状态）。
-3.  **单脉冲高精度分发 (60ns)**：
-    *   在进入比对状态的下一个时钟边沿，系统比对余额充足且库存大于0，交易判定合法。
-    *   瞬间向外分发扣款脉冲 `deduct_pulse` 和出货脉冲 `dispense_pulse`。
-    *   **关键时序特征**：这两个脉冲**仅仅在 60ns 至 70ns 之间高电平维持了 1 个时钟周期**，便在下一个时钟沿瞬间复位。这完美印证了**单脉冲防多重计费**的设计，保证了每一次确认动作在底层硬件上绝无“双重结算”或“连续出货”的隐患。
-4.  **成功停留 3 秒自跳转 (60ns 之后)**：
-    *   在 60ns 处状态编码跳转为 **`2`**（`ST_SUCCESS` 成功状态）。
-    *   系统在这个状态下平稳保持（数码管显示余额扣减后的值，VGA 维持弹出交易成功绿框），直至内部自适应计数器计时达到 3 秒（测试仿真重写频率为 100Hz，对应 300 个时钟周期），然后自动、顺滑地跳转回空闲状态 `0`。
-
----
-
-## 🛠️ 五、 如何在 Vivado 中导入和仿真？
-
-1.  创建您的 Vivado 工程。
-2.  **添加源文件**：点击 `Add Sources` -> `Add or Create Design Sources`，将本目录下的 `payment_controller.vhd` 和 `vending_fsm.vhd` 导入工程。
-3.  **添加仿真文件**：点击 `Add Sources` -> `Add or Create Simulation Sources`，导入 `tb_payment_controller.vhd` 和 `tb_vending_fsm.vhd`。
-4.  **运行仿真**：
-    *   在左侧 Sources 树中右键点击您想测试的 Testbench，选择 **`Set as Top`**。
-    *   在左侧导航栏点击 **`Run Simulation`** -> **`Run Behavioral Simulation`**。
-    *   将仿真时间设为 `10us`，点击 `Run`，即可瞬间跑出上述完全一致的精美波形图！
+*本项目由本课程设计小组成员全员共同开发与联调完毕，代码规范，注释详实，在板级实测上表现优异，具备极高的实际工程交付质量！*
