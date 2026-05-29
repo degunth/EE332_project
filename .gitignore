@@ -30,3 +30,6 @@
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Ignore the entire old Vivado project directory
+Vending_Machine/Control_and_Payment/
